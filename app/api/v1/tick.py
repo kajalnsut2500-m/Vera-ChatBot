@@ -57,17 +57,27 @@ async def tick(body: TickRequest) -> TickResponse:
 
         customer = await get_context("customer", customer_id) if customer_id else None
 
-        # Collect all Vera messages previously sent to this merchant across all
-        # conversations.  Scoping to the single trigger conv_id would allow the
-        # same body to be re-sent via a different trigger; merchant-scope prevents
-        # that, including when a Gemini-polished variant was stored by a prior tick.
+        # Scope prior bodies to the exact recipient of this trigger:
+        # - merchant-facing (customer_id IS NULL): all prior merchant-facing messages
+        #   for this merchant, regardless of which trigger sent them.
+        # - customer-facing: only messages for this specific merchant+customer pair,
+        #   so a message sent to customer A never suppresses a valid send to customer B.
         prior: list[str] = []
-        async with db.execute(
-            "SELECT c.body FROM conversations c "
-            "JOIN conversation_meta cm ON c.conversation_id = cm.conversation_id "
-            "WHERE cm.merchant_id = ? AND c.role = 'vera'",
-            (merchant_id,),
-        ) as cur:
+        if customer_id:
+            prior_query = (
+                "SELECT c.body FROM conversations c "
+                "JOIN conversation_meta cm ON c.conversation_id = cm.conversation_id "
+                "WHERE cm.merchant_id = ? AND cm.customer_id = ? AND c.role = 'vera'"
+            )
+            prior_params = (merchant_id, customer_id)
+        else:
+            prior_query = (
+                "SELECT c.body FROM conversations c "
+                "JOIN conversation_meta cm ON c.conversation_id = cm.conversation_id "
+                "WHERE cm.merchant_id = ? AND cm.customer_id IS NULL AND c.role = 'vera'"
+            )
+            prior_params = (merchant_id,)
+        async with db.execute(prior_query, prior_params) as cur:
             async for row in cur:
                 prior.append(row["body"])
 

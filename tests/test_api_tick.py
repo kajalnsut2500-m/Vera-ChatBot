@@ -150,3 +150,84 @@ async def test_tick_polished_body_repeat_uses_deterministic_draft(
     assert "views" in actual_body or "30" in actual_body, (
         f"Expected perf_dip deterministic body, got: {actual_body!r}"
     )
+
+
+# ── Anti-repetition recipient-scoping tests ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_merchant_message_not_reused_across_triggers(
+    client, category_dentists, merchant_drmeera, trigger_research_active
+):
+    """
+    A prior merchant-facing message suppresses the same body from a second
+    merchant-facing trigger; customer_id IS NULL scope is enforced correctly.
+    """
+    mid = merchant_drmeera["merchant_id"]
+    await _full_setup(client, category_dentists, merchant_drmeera, trigger_research_active)
+
+    # First tick stores a research_digest body for this merchant (customer_id=NULL).
+    resp1 = await client.post(TICK, json={"now": _NOW, "available_triggers": [trigger_research_active["id"]]})
+    assert resp1.json()["actions"], "Precondition: first tick must produce an action"
+
+    # Second trigger: same kind + merchant → compose() will generate the identical body.
+    trg2 = {
+        **trigger_research_active,
+        "id": "trg_merchant_scope_test",
+        "suppression_key": "merchant:scope:dedup:unique",
+        "expires_at": "2035-01-01T00:00:00Z",
+    }
+    await client.post(PUSH, json=_ctx("trigger", trg2["id"], trg2))
+
+    resp2 = await client.post(TICK, json={"now": _NOW, "available_triggers": [trg2["id"]]})
+    # The body is already in merchant's prior (customer_id IS NULL scope) → suppressed.
+    assert resp2.json()["actions"] == [], (
+        "Second merchant trigger produced a duplicate body that should have been suppressed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_customer_a_message_does_not_suppress_customer_b(
+    client, category_dentists, merchant_drmeera, customers_seed
+):
+    """
+    A message sent to customer A (priya) must not suppress the same valid
+    message to customer B (rohit) for the same merchant.
+    """
+    mid = merchant_drmeera["merchant_id"]
+    priya = next(c for c in customers_seed if c["customer_id"] == "c_001_priya_for_m001")
+    rohit = next(c for c in customers_seed if c["customer_id"] == "c_002_rohit_for_m001")
+
+    await client.post(PUSH, json=_ctx("category", "dentists", category_dentists))
+    await client.post(PUSH, json=_ctx("merchant", mid, merchant_drmeera))
+    await client.post(PUSH, json=_ctx("customer", priya["customer_id"], priya))
+    await client.post(PUSH, json=_ctx("customer", rohit["customer_id"], rohit))
+
+    recall_priya = {
+        "id": "trg_recall_scope_priya", "scope": "customer", "kind": "recall_due",
+        "merchant_id": mid, "customer_id": priya["customer_id"],
+        "payload": {"service_due": "cleaning", "available_slots": [{"label": "Mon 10am"}, {"label": "Tue 2pm"}]},
+        "urgency": 8, "suppression_key": "recall:scope:priya:unique",
+        "expires_at": "2035-01-01T00:00:00Z",
+    }
+    recall_rohit = {
+        "id": "trg_recall_scope_rohit", "scope": "customer", "kind": "recall_due",
+        "merchant_id": mid, "customer_id": rohit["customer_id"],
+        "payload": {"service_due": "cleaning", "available_slots": [{"label": "Mon 10am"}, {"label": "Tue 2pm"}]},
+        "urgency": 8, "suppression_key": "recall:scope:rohit:unique",
+        "expires_at": "2035-01-01T00:00:00Z",
+    }
+    await client.post(PUSH, json=_ctx("trigger", recall_priya["id"], recall_priya))
+    await client.post(PUSH, json=_ctx("trigger", recall_rohit["id"], recall_rohit))
+
+    # Fire priya's recall first.
+    resp_priya = await client.post(TICK, json={"now": _NOW, "available_triggers": [recall_priya["id"]]})
+    assert resp_priya.json()["actions"], "Precondition: priya's recall must produce an action"
+
+    # Rohit's recall must still fire — priya's message must not suppress it.
+    resp_rohit = await client.post(TICK, json={"now": _NOW, "available_triggers": [recall_rohit["id"]]})
+    assert resp_rohit.json()["actions"], (
+        "Rohit's recall was wrongly suppressed by priya's prior message"
+    )
+    # The body should address rohit, not priya.
+    rohit_body = resp_rohit.json()["actions"][0]["body"]
+    assert rohit["identity"]["name"] in rohit_body or rohit["customer_id"] in rohit_body or "cleaning" in rohit_body
