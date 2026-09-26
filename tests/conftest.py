@@ -29,14 +29,14 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     from app.main import create_app
 
     await init_db(":memory:")
-    test_app = create_app()
-
-    async with AsyncClient(
-        transport=ASGITransport(app=test_app), base_url="http://test"
-    ) as ac:
-        yield ac
-
-    await close_db()
+    try:
+        test_app = create_app()
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app), base_url="http://test"
+        ) as ac:
+            yield ac
+    finally:
+        await close_db()
 
 
 # ── Dataset fixtures ───────────────────────────────────────────────────────────
@@ -97,3 +97,10 @@ def trigger_recall_priya(triggers_seed) -> dict:
 @pytest.fixture(scope="session")
 def trigger_perf_dip(triggers_seed) -> dict:
     return next(t for t in triggers_seed if t["id"] == "trg_004_perf_dip_bharat")
+
+
+@pytest.fixture(scope="session")
+def trigger_research_active(trigger_research) -> dict:
+    """trigger_research with a far-future expiry so tick tests pass regardless of test date."""
+    return {**trigger_research, "expires_at": "2035-01-01T00:00:00Z",
+            "suppression_key": "research:dentists:active-test"}

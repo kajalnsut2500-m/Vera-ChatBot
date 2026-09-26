@@ -27,12 +27,17 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="Vera — magicpin Merchant AI", version="1.0.0", lifespan=lifespan)
 
-    # Routers registered here; later phases add context/tick/reply
+    from app.api.v1.context import router as context_router
     from app.api.v1.health import router as health_router
     from app.api.v1.metadata import router as meta_router
+    from app.api.v1.reply import router as reply_router
+    from app.api.v1.tick import router as tick_router
 
     app.include_router(health_router, prefix="/v1")
     app.include_router(meta_router, prefix="/v1")
+    app.include_router(context_router, prefix="/v1")
+    app.include_router(tick_router, prefix="/v1")
+    app.include_router(reply_router, prefix="/v1")
 
     @app.post("/v1/teardown")
     async def teardown():

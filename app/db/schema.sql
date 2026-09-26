@@ -34,3 +34,15 @@ CREATE TABLE IF NOT EXISTS closed_conversations (
     reason           TEXT NOT NULL,
     closed_at        TEXT NOT NULL
 );
+
+-- Metadata for each bot-initiated conversation (from /v1/tick).
+CREATE TABLE IF NOT EXISTS conversation_meta (
+    conversation_id   TEXT PRIMARY KEY,
+    merchant_id       TEXT,
+    customer_id       TEXT,
+    trigger_id        TEXT,
+    auto_reply_count  INTEGER NOT NULL DEFAULT 0,
+    last_bot_body     TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
