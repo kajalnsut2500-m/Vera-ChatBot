@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from httpx import AsyncClient
 
@@ -86,3 +88,40 @@ async def test_push_invalid_scope_rejected(client):
         "payload": {}, "delivered_at": "2026-09-26T00:00:00Z",
     })
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_key_no_integrity_error(client):
+    """
+    Regression for the SELECT-then-INSERT race: concurrent pushes for the same
+    scope+context_id must never raise IntegrityError (HTTP 500).  The highest
+    version must win; no write must be silently lost to a constraint violation.
+    """
+    cid = "concurrent_test_key"
+    payloads = [
+        {"scope": "merchant", "context_id": cid, "version": v,
+         "payload": {"_v": v}, "delivered_at": "2026-09-26T00:00:00Z"}
+        for v in (1, 2, 3, 4, 5)
+    ]
+
+    # Fire all five versions simultaneously.
+    responses = await asyncio.gather(
+        *[client.post("/v1/context", json=p) for p in payloads]
+    )
+
+    statuses = [r.status_code for r in responses]
+    # No 500s — no IntegrityError escaped.
+    assert all(s in (200, 409) for s in statuses), (
+        f"Unexpected status codes (expected only 200/409): {statuses}"
+    )
+
+    # At least one request must have succeeded (the one carrying the highest version).
+    assert any(s == 200 for s in statuses)
+
+    # The stored version must be the highest we sent (version=5).
+    check = await client.post("/v1/context", json={
+        "scope": "merchant", "context_id": cid, "version": 4,
+        "payload": {"_v": 4}, "delivered_at": "2026-09-26T00:00:00Z",
+    })
+    assert check.status_code == 409, "version 4 must be stale after version 5 landed"
+    assert check.json()["current_version"] == 5

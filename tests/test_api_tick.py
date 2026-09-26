@@ -97,36 +97,56 @@ async def test_tick_perf_dip_trigger(client, category_dentists, merchant_drmeera
 async def test_tick_polished_body_repeat_uses_deterministic_draft(
     client, category_dentists, merchant_drmeera, trigger_research_active, monkeypatch
 ):
-    """Fix #1: if Gemini returns a body already in prior, tick must use the deterministic draft."""
+    """
+    Anti-repetition regression: when Gemini returns a body already stored in the
+    merchant's history, tick must fall back to the deterministic draft.
+
+    Setup:
+      - Tick 1 (no Gemini): research_digest fires → deterministic body D1 stored in DB.
+      - Tick 2 (Gemini active): a perf_dip trigger for the same merchant fires.
+        Gemini mock returns D1 (already in merchant history).
+        The polished body must be rejected and the deterministic perf_dip draft D2 used.
+    """
+    import json as _json
+
+    mid = merchant_drmeera["merchant_id"]
+
+    # Tick 1 — no Gemini, stores deterministic research_digest body for merchant.
     await _full_setup(client, category_dentists, merchant_drmeera, trigger_research_active)
+    resp1 = await client.post(TICK, json={"now": _NOW, "available_triggers": [trigger_research_active["id"]]})
+    assert resp1.json()["actions"], "Precondition: first tick must produce an action"
+    stored_body = resp1.json()["actions"][0]["body"]
 
-    first = await client.post(TICK, json={"now": _NOW, "available_triggers": [trigger_research_active["id"]]})
-    assert first.json()["actions"], "Precondition: first tick produces an action"
-    deterministic_body = first.json()["actions"][0]["body"]
-
-    # Simulate a previous run where Gemini polished the body to this value and stored it.
-    # On next tick the suppression key is different (unique trigger), but the body is in prior.
-    # We mock polish() to return a body already in DB (the stored deterministic body).
-    trg2 = {**trigger_research_active, "id": "trg_repeat_test", "suppression_key": "repeat:test:unique99",
-            "expires_at": "2035-01-01T00:00:00Z"}
-    await client.post(PUSH, json=_ctx("trigger", trg2["id"], trg2))
+    # Tick 2 — perf_dip trigger for the same merchant; Gemini mock returns stored_body.
+    perf_trg = {
+        "id": "trg_repeat_perf_test", "scope": "merchant", "kind": "perf_dip",
+        "merchant_id": mid, "customer_id": None,
+        "payload": {"metric": "views", "delta_pct": -0.30, "window": "7d"},
+        "urgency": 5, "suppression_key": "repeat:perf:unique_regression",
+        "expires_at": "2035-01-01T00:00:00Z",
+    }
+    await client.post(PUSH, json=_ctx("trigger", perf_trg["id"], perf_trg))
 
     monkeypatch.setenv("VERA_GEMINI_API_KEY", "test-key-abc")
-    # Polish returns the exact body that was stored in DB from the first tick
     with patch("app.core.gemini_polish._call_gemini_sync") as mock_call:
-        import json as _json
         mock_call.return_value = {
             "candidates": [{"content": {"parts": [{"text": _json.dumps({
-                "body": deterministic_body,  # same as what's already in DB
+                "body": stored_body,         # already in merchant history
                 "cta": "binary_yes_stop",
                 "used_fact_ids": ["f0"],
             })}]}}]
         }
-        resp = await client.post(TICK, json={"now": _NOW, "available_triggers": [trg2["id"]]})
+        resp2 = await client.post(TICK, json={"now": _NOW, "available_triggers": [perf_trg["id"]]})
 
-    actions = resp.json()["actions"]
-    # The second trigger has no prior bodies in DB (different conv_id), so this is a new action.
-    # The key check: polished body == deterministic_body == what's stored for conv1, but
-    # prior for conv2 is empty, so it goes through. This test mainly validates polish() is
-    # called and the guard logic doesn't crash with the new condition.
-    assert resp.status_code == 200
+    actions = resp2.json()["actions"]
+    assert actions, "perf_dip trigger must produce an action"
+    actual_body = actions[0]["body"]
+
+    # Core assertion: polished repeat was rejected; deterministic draft used instead.
+    assert actual_body != stored_body, (
+        "Tick returned the repeated body instead of falling back to the deterministic draft"
+    )
+    # Sanity: the body references the perf_dip metric, not the research_digest content.
+    assert "views" in actual_body or "30" in actual_body, (
+        f"Expected perf_dip deterministic body, got: {actual_body!r}"
+    )

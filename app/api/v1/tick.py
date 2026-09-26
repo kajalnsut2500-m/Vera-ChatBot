@@ -57,12 +57,16 @@ async def tick(body: TickRequest) -> TickResponse:
 
         customer = await get_context("customer", customer_id) if customer_id else None
 
-        # Collect prior bodies for this merchant to enforce anti-repetition
+        # Collect all Vera messages previously sent to this merchant across all
+        # conversations.  Scoping to the single trigger conv_id would allow the
+        # same body to be re-sent via a different trigger; merchant-scope prevents
+        # that, including when a Gemini-polished variant was stored by a prior tick.
         prior: list[str] = []
-        conv_id_check = f"conv_{merchant_id}_{trg.get('id', '')}"
         async with db.execute(
-            "SELECT body FROM conversations WHERE conversation_id = ? AND role = 'vera'",
-            (conv_id_check,),
+            "SELECT c.body FROM conversations c "
+            "JOIN conversation_meta cm ON c.conversation_id = cm.conversation_id "
+            "WHERE cm.merchant_id = ? AND c.role = 'vera'",
+            (merchant_id,),
         ) as cur:
             async for row in cur:
                 prior.append(row["body"])
