@@ -25,7 +25,8 @@ _GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "gemini-2.0-flash:generateContent?key={key}"
 )
-_TIMEOUT = 4  # seconds — hard ceiling
+_TIMEOUT = 4        # seconds — asyncio outer ceiling
+_SOCKET_TIMEOUT = 3  # socket closes before asyncio cancels, preventing zombie threads
 
 
 def _api_key() -> str:
@@ -89,7 +90,7 @@ def _call_gemini_sync(key: str, payload: dict) -> dict:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+    with urllib.request.urlopen(req, timeout=_SOCKET_TIMEOUT) as resp:
         return json.loads(resp.read())
 
 
@@ -113,7 +114,7 @@ async def polish(
     payload = _build_payload(draft_body, cta_str, facts, voice_rules)
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         raw = await asyncio.wait_for(
             loop.run_in_executor(None, _call_gemini_sync, key, payload),
             timeout=_TIMEOUT,

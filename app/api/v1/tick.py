@@ -76,7 +76,10 @@ async def tick(body: TickRequest) -> TickResponse:
         polished_body = await polish(
             action.body, action.cta.value, action.template_params, voice_rules
         )
-        if polished_body != action.body:
+        # Only use polished body if it isn't a repeat of something already sent.
+        # compose() already confirmed action.body (deterministic draft D) is not in prior;
+        # but a previous tick may have stored a polished variant P that Gemini re-produces.
+        if polished_body != action.body and polished_body not in prior:
             action = action.model_copy(update={"body": polished_body})
 
         # Record suppression and conversation
