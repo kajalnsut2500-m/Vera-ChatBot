@@ -50,6 +50,10 @@ python judge_simulator.py
 | POST | /v1/reply | Route inbound merchant reply |
 | POST | /v1/teardown | Wipe all DB state |
 
+## Optional: Gemini copy-polish
+
+Set `VERA_GEMINI_API_KEY=<your-key>` in `.env` to enable engagement rewrites on `/v1/tick`. If the key is absent, the service times out, or the response is invalid, the deterministic draft is used unchanged.
+
 ## Known Limitations
 
 - Composer is deterministic/rule-based; no LLM in the message path

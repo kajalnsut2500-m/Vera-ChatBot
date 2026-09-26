@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="VERA_", env_file=".env", extra="ignore")
 
     anthropic_api_key: str = ""
+    gemini_api_key: str = ""  # optional; enables copy-polish layer in tick
     model: str = "claude-sonnet-5"
     db_path: str = "./vera.db"
     team_name: str = "Team Vera"

@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from app.core.context_store import get_context
 from app.core.composer import compose
 from app.core.eligibility import is_eligible, rank, record_suppression
+from app.core.gemini_polish import polish
 from app.db.database import get_db
 from app.models.tick_io import TickRequest, TickResponse
 
@@ -69,6 +70,14 @@ async def tick(body: TickRequest) -> TickResponse:
         action = compose(trg, merchant, category, customer, prior)
         if action is None:
             continue
+
+        # Optional Gemini copy-polish — falls back to deterministic draft on any error
+        voice_rules = category.get("voice", {}).get("rules", [])
+        polished_body = await polish(
+            action.body, action.cta.value, action.template_params, voice_rules
+        )
+        if polished_body != action.body:
+            action = action.model_copy(update={"body": polished_body})
 
         # Record suppression and conversation
         await record_suppression(trg.get("suppression_key", ""), action.conversation_id)
