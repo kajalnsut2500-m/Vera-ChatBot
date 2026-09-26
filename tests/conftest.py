@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 
-# Use in-memory SQLite so tests are isolated and fast
+# Set env vars before any app module is imported so pydantic-settings picks them up.
 os.environ.setdefault("VERA_DB_PATH", ":memory:")
 os.environ.setdefault("VERA_ANTHROPIC_API_KEY", "sk-ant-test-key")
 
@@ -18,14 +18,25 @@ DATASET = Path(__file__).parent.parent / "dataset"
 
 @pytest_asyncio.fixture()
 async def client() -> AsyncGenerator[AsyncClient, None]:
-    # Import here so env vars are set before Settings is evaluated
+    """
+    Yields an AsyncClient wired to a fresh in-memory SQLite database.
+
+    ASGITransport does not trigger FastAPI's lifespan events, so we call
+    init_db / close_db explicitly around the client instead of relying on
+    the app's startup/shutdown hooks.  No production code is modified.
+    """
+    from app.db.database import close_db, init_db
     from app.main import create_app
 
+    await init_db(":memory:")
     test_app = create_app()
+
     async with AsyncClient(
         transport=ASGITransport(app=test_app), base_url="http://test"
     ) as ac:
         yield ac
+
+    await close_db()
 
 
 # ── Dataset fixtures ───────────────────────────────────────────────────────────
